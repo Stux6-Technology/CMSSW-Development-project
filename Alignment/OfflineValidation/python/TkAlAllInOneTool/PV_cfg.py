@@ -56,7 +56,7 @@ if "goodlumi" in config["validation"]:
         goodLumiSecs = cms.untracked.VLuminosityBlockRange(LumiList.LumiList(filename = config["validation"]["goodlumi"]).getCMSSWString().split(','))
         
     else:
-        print("Does not exist: {}. Continue without good lumi section file.")
+        print("Does not exist: {}. Continue without good lumi section file.".format(config["validation"]["goodlumi"]))
         goodLumiSecs = cms.untracked.VLuminosityBlockRange()
 
 else:
@@ -111,8 +111,8 @@ import Alignment.CommonAlignment.tools.trackselectionRefitting as trackselRefit
 process.seqTrackselRefit = trackselRefit.getSequence(process,
                                                      config["validation"].get("trackcollection", "ALCARECOTkAlMinBias"),
                                                      isPVValidation=True,
-                                                     TTRHBuilder=config["validation"].get("tthrbuilder", "WithAngleAndTemplate"),
-                                                     usePixelQualityFlag=config["validation"].get("usePixelQualityFlag", True),
+                                                     TTRHBuilder=config["validation"].get("tthrbuilder", "WithTrackAngle"),
+                                                     usePixelQualityFlag=config["validation"].get("usePixelQualityFlag", False),
                                                      openMassWindow=False,
                                                      cosmicsDecoMode=True,
                                                      cosmicsZeroTesla=config["validation"].get("cosmicsZeroTesla", False),                                                     
@@ -160,6 +160,19 @@ process.noscraping = cms.EDFilter("FilterOutScraping",
                                   numtrack = cms.untracked.uint32(10),
                                   thresh = cms.untracked.double(0.25)
                                   )
+
+# Select events based on the pixel cluster multiplicity
+process.filterSeq = cms.Sequence()
+
+maxclusters = config["validation"].get("maxclusters", None)
+if(maxclusters is not None):
+    import  HLTrigger.special.hltPixelActivityFilter_cfi
+    process.multFilter = HLTrigger.special.hltPixelActivityFilter_cfi.hltPixelActivityFilter.clone(
+        inputTag = 'ALCARECOTkAlMinBias',
+        minClusters = 1,
+        maxClusters = maxclusters
+    )
+    process.filterSeq += process.multFilter
 
 ###################################################################
 # Beamspot compatibility check
@@ -256,6 +269,7 @@ process.TFileService = cms.Service("TFileService",
 # Path
 ####################################################################
 process.p = cms.Path(process.goodvertexSkim*
+                     process.filterSeq*
                      process.seqTrackselRefit*
                      process.BeamSpotChecker*
                      process.PVValidation)

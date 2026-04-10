@@ -13,6 +13,9 @@
 // system include files
 #include <atomic>
 #include <numeric>
+#include <ranges>
+#include <unordered_map>
+#include <unordered_set>
 
 // user include files
 #include "PerfTools/AllocMonitor/interface/AllocMonitorBase.h"
@@ -28,7 +31,6 @@
 #include "FWCore/Utilities/interface/thread_safety_macros.h"
 
 #include "monitor_file_utilities.h"
-#include "mea_AllocMap.h"
 #include "ThreadTracker.h"
 
 #define DEBUGGER_BREAK
@@ -39,8 +41,13 @@ void break_on_unmatched_dealloc() {}
 }
 #endif
 namespace {
-  using namespace edm::service::moduleEventAlloc;
   using namespace edm::moduleAlloc::monitor_file_utilities;
+
+  using AllocMap = std::unordered_map<void const*, std::size_t>;
+  auto accumulateValues(AllocMap const& map) {
+    auto const values = map | std::views::transform([](auto const& element) { return element.second; });
+    return std::accumulate(values.begin(), values.end(), 0ULL);
+  }
 
   struct ThreadAllocInfo {
     AllocMap allocMap_;
@@ -54,11 +61,16 @@ namespace {
     std::size_t numUnmatchedDeallocs_ = 0;
 
     bool active_ = false;
-    void alloc(void const* iAddress, std::size_t iSize) { allocMap_.insert(iAddress, iSize); }
+    void alloc(void const* iAddress, std::size_t iSize) {
+      // Note that the iAddress might already be in the map if the
+      // allocation occurred within and the deallocation outside of
+      // the measurement region.
+      allocMap_[iAddress] = iSize;
+    }
 
     void dealloc(void const* iAddress, std::size_t iSize) {
-      auto size = allocMap_.erase(iAddress);
-      if (size == 0) {
+      auto nErased = allocMap_.erase(iAddress);
+      if (nErased == 0) {
 #if defined(DEBUGGER_BREAK)
         break_on_unmatched_dealloc();
 #endif
@@ -76,7 +88,7 @@ namespace {
       totalUnmatchedDealloc_ = 0;
       numMatchedDeallocs_ = 0;
       numUnmatchedDeallocs_ = 0;
-      allocMap_.clear();
+      AllocMap{}.swap(allocMap_);  // release memory
       unmatched_.clear();
       active_ = true;
     }
@@ -209,9 +221,7 @@ namespace {
 class ModuleEventAllocMonitor {
 public:
   ModuleEventAllocMonitor(edm::ParameterSet const& iPS, edm::ActivityRegistry& iAR)
-      : moduleNames_(iPS.getUntrackedParameter<std::vector<std::string>>("moduleNames")),
-        nEventsToSkip_(iPS.getUntrackedParameter<unsigned int>("nEventsToSkip")),
-        filter_(&moduleIDs_) {
+      : nEventsToSkip_(iPS.getUntrackedParameter<unsigned int>("nEventsToSkip")), filter_(&moduleIDs_) {
     (void)cms::perftools::AllocMonitorRegistry::instance().createAndRegisterMonitor<MonitorAdaptor>();
 
     if (nEventsToSkip_ > 0) {
@@ -239,17 +249,31 @@ public:
            "#D <module ID> <stream #> <total matched deallocations (bytes)> <# matched deallocations>\n";
       file->write(s.str());
     }
-    if (not moduleNames_.empty()) {
+    auto skippedModuleNamesVec = iPS.getUntrackedParameter<std::vector<std::string>>("skippedModuleNames");
+    auto moduleNamesVec = iPS.getUntrackedParameter<std::vector<std::string>>("moduleNames");
+    moduleNamesSet_ = std::unordered_set<std::string>(moduleNamesVec.begin(), moduleNamesVec.end());
+    skippedModuleNamesSet_ =
+        std::unordered_set<std::string>(skippedModuleNamesVec.begin(), skippedModuleNamesVec.end());
+    if (not moduleNamesSet_.empty() or not skippedModuleNamesSet_.empty()) {
       iAR.watchPreModuleConstruction([this, file](auto const& description) {
-        auto found = std::find(moduleNames_.begin(), moduleNames_.end(), description.moduleLabel());
-        if (found != moduleNames_.end()) {
+        bool shouldKeep = false;
+        if (not moduleNamesSet_.empty()) {
+          shouldKeep = moduleNamesSet_.contains(description.moduleLabel());
+        }
+        if (not skippedModuleNamesSet_.empty()) {
+          shouldKeep = not skippedModuleNamesSet_.contains(description.moduleLabel());
+        }
+        std::stringstream s;
+        if (shouldKeep) {
+          s << "@ " << description.moduleLabel() << " " << description.moduleName() << " " << description.id() << "\n";
           moduleIDs_.push_back(description.id());
           nModules_ = moduleIDs_.size();
           std::sort(moduleIDs_.begin(), moduleIDs_.end());
-          std::stringstream s;
-          s << "@ " << description.moduleLabel() << " " << description.moduleName() << " " << description.id() << "\n";
-          file->write(s.str());
+        } else {
+          s << "# Skipping module" << description.moduleLabel() << " " << description.moduleName() << " "
+            << description.id() << " # skipped\n";
         }
+        file->write(s.str());
       });
     } else {
       iAR.watchPreModuleConstruction([this, file](auto const& description) {
@@ -280,7 +304,8 @@ public:
 
     iAR.watchPreModuleEvent([this](auto const& iStream, auto const& iMod) {
       auto mod_id = module_id(iMod);
-      auto acquireInfo = [this, iStream, mod_id]() {
+      // Explicit return type to avoid copies of return value for sure
+      auto acquireInfo = [this, iStream, mod_id]() -> AllocMap const& {
         //acquire might have started stuff
         streamSync_[iStream.streamID().value()].load();
         auto index = moduleIndex(mod_id);
@@ -295,16 +320,15 @@ public:
       auto mod_id = module_id(iMod);
       auto info = filter_.stopOnThread(mod_id);
       if (info) {
-        auto v = std::accumulate(info->allocMap_.allocationSizes().begin(), info->allocMap_.allocationSizes().end(), 0);
+        auto v = accumulateValues(info->allocMap_);
         std::stringstream s;
         s << "M " << mod_id << " " << iStream.streamID().value() << " " << info->totalMatchedDeallocSize_ << " "
           << info->numMatchedDeallocs_ << " " << info->totalUnmatchedDealloc_ << " " << info->numUnmatchedDeallocs_
-          << " " << v << " " << info->allocMap_.allocationSizes().size() << "\n";
+          << " " << v << " " << info->allocMap_.size() << "\n";
         file->write(s.str());
         auto index = moduleIndex(mod_id);
         auto finishedOrder = streamNFinishedModules_[iStream.streamID().value()]++;
-        streamModuleFinishOrder_[finishedOrder + nModules_ * iStream.streamID().value()] =
-            nModules_ * iStream.streamID().value() + index;
+        streamModuleFinishOrder_[finishedOrder + nModules_ * iStream.streamID().value()] = index;
         streamModuleAllocs_[nModules_ * iStream.streamID().value() + index] = info->allocMap_;
         ++streamSync_[iStream.streamID().value()];
       }
@@ -322,27 +346,18 @@ public:
       auto mod_id = module_id(iMod);
       auto info = filter_.stopOnThread(mod_id);
       if (info) {
-        assert(info->allocMap_.allocationSizes().size() == info->allocMap_.size());
-        auto v = std::accumulate(info->allocMap_.allocationSizes().begin(), info->allocMap_.allocationSizes().end(), 0);
+        auto v = accumulateValues(info->allocMap_);
         std::stringstream s;
         s << "A " << mod_id << " " << iStream.streamID().value() << " " << info->totalMatchedDeallocSize_ << " "
           << info->numMatchedDeallocs_ << " " << info->totalUnmatchedDealloc_ << " " << info->numUnmatchedDeallocs_
-          << " " << v << " " << info->allocMap_.allocationSizes().size() << "\n";
+          << " " << v << " " << info->allocMap_.size() << "\n";
         file->write(s.str());
         auto index = mod_id;
         if (not moduleIDs_.empty()) {
           auto it = std::lower_bound(moduleIDs_.begin(), moduleIDs_.end(), mod_id);
           index = it - moduleIDs_.begin();
         }
-        {
-          auto const& alloc = streamModuleAllocs_[nModules_ * iStream.streamID().value() + index];
-          assert(alloc.size() == alloc.allocationSizes().size());
-        }
         streamModuleAllocs_[nModules_ * iStream.streamID().value() + index] = info->allocMap_;
-        {
-          auto const& alloc = streamModuleAllocs_[nModules_ * iStream.streamID().value() + index];
-          assert(alloc.size() == alloc.allocationSizes().size());
-        }
         ++streamSync_[iStream.streamID().value()];
         streamModuleInAcquire_[nModules_ * iStream.streamID().value() + index].store(false);
       }
@@ -364,42 +379,55 @@ public:
       auto info = filter_.stopOnThread();
       if (info) {
         streamSync_[iStream.streamID().value()].load();
-        //search for associated allocs to deallocs in reverse order that modules finished
-        auto nRan = streamNFinishedModules_[iStream.streamID().value()].load();
-        auto itBegin = streamModuleFinishOrder_.cbegin() + nModules_ - nRan;
-        auto const itEnd = itBegin + nRan;
+
+        // value is size, index
+        std::unordered_map<void const*, std::pair<std::size_t, std::size_t>> combinedAllocMap;
+        {
+          auto const nRan = streamNFinishedModules_[iStream.streamID().value()].load();
+          assert(nRan <= nModules_);
+          auto const streamModuleOffset = iStream.streamID().value() * nModules_;
+          auto const itBegin = streamModuleFinishOrder_.begin() + streamModuleOffset;
+          auto const itEnd = itBegin + nRan;
+
+          std::size_t const total =
+              std::accumulate(itBegin, itEnd, 0U, [this, streamModuleOffset](unsigned int a, auto const index) {
+                return a + streamModuleAllocs_[index + streamModuleOffset].size();
+              });
+          combinedAllocMap.reserve(total);
+
+          for (auto it = itBegin; it != itEnd; ++it) {
+            auto& allocs = streamModuleAllocs_[*it + streamModuleOffset];
+            for (auto const [addr, size] : allocs) {
+              // need to keep the address -> (size, module)
+              // association of the last finished module as that is
+              // the most likely module (that we can figure out) that
+              // allocated the memory of a data product that was
+              // destructed here
+              combinedAllocMap[addr] = std::pair(size, *it);
+            }
+            AllocMap{}.swap(allocs);
+          }
+        }
         streamNFinishedModules_[iStream.streamID().value()].store(0);
         {
           std::vector<std::size_t> moduleDeallocSize(nModules_);
           std::vector<unsigned int> moduleDeallocCount(nModules_);
-          for (auto& address : info->unmatched_) {
-            decltype(streamModuleAllocs_[0].findOffset(address)) offset;
-            auto found = std::find_if(itBegin, itEnd, [&address, &offset, this](auto const& index) {
-              auto const& elem = streamModuleAllocs_[index];
-              return elem.size() != 0 and (offset = elem.findOffset(address)) != elem.size();
-            });
-            if (found != itEnd) {
-              auto index = *found - nModules_ * iStream.streamID().value();
-              moduleDeallocSize[index] += streamModuleAllocs_[*found].allocationSizes()[offset];
+          for (auto const& address : info->unmatched_) {
+            auto const found = combinedAllocMap.find(address);
+            if (found != combinedAllocMap.end()) {
+              auto const index = found->second.second;
+              moduleDeallocSize[index] += found->second.first;
               moduleDeallocCount[index] += 1;
             }
           }
           for (unsigned int index = 0; index < nModules_; ++index) {
             if (moduleDeallocCount[index] != 0) {
-              auto id = moduleIDs_.empty() ? index : moduleIDs_[index];
+              auto const id = moduleIDs_.empty() ? index : moduleIDs_[index];
               std::stringstream s;
               s << "D " << id << " " << iStream.streamID().value() << " " << moduleDeallocSize[index] << " "
                 << moduleDeallocCount[index] << "\n";
               file->write(s.str());
             }
-          }
-        }
-
-        {
-          auto itBegin = streamModuleAllocs_.begin() + nModules_ * iStream.streamID().value();
-          auto itEnd = itBegin + nModules_;
-          for (auto it = itBegin; it != itEnd; ++it) {
-            it->clear();
           }
         }
       }
@@ -413,6 +441,8 @@ public:
         ->setComment(
             "Module labels for modules which should have their allocations monitored. If empty all modules will be "
             "monitored.");
+    ps.addUntracked<std::vector<std::string>>("skippedModuleNames", std::vector<std::string>())
+        ->setComment("Module labels for modules which should have their allocations ignored.");
     ps.addUntracked<unsigned int>("nEventsToSkip", 0)
         ->setComment(
             "Number of events to skip before turning on monitoring. If used in a multi-threaded application, "
@@ -432,7 +462,7 @@ private:
   }
 
   bool forThisModule(unsigned int iID) const {
-    return (moduleNames_.empty() or std::binary_search(moduleIDs_.begin(), moduleIDs_.end(), iID));
+    return (moduleNamesSet_.empty() or std::binary_search(moduleIDs_.begin(), moduleIDs_.end(), iID));
   }
   //The size is (#streams)*(#modules)
   CMS_THREAD_GUARD(streamSync_) std::vector<AllocMap> streamModuleAllocs_;
@@ -441,7 +471,8 @@ private:
   CMS_THREAD_GUARD(streamSync_) std::vector<int> streamModuleFinishOrder_;
   std::vector<std::atomic<unsigned int>> streamNFinishedModules_;
   std::vector<std::atomic<unsigned int>> streamSync_;
-  std::vector<std::string> moduleNames_;
+  std::unordered_set<std::string> moduleNamesSet_;
+  std::unordered_set<std::string> skippedModuleNamesSet_;
   std::vector<int> moduleIDs_;
   unsigned int nStreams_ = 0;
   unsigned int nModules_ = 0;

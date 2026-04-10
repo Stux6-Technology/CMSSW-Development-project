@@ -9,6 +9,7 @@
 #include <unistd.h>
 #include <vector>
 #include <bitset>
+#include <format>
 
 #include "FWCore/MessageLogger/interface/MessageLogger.h"
 
@@ -171,11 +172,11 @@ std::vector<std::shared_ptr<const edm::DaqProvenanceHelper>>& DataModeDTH::makeD
   daqProvenanceHelpers_.clear();
 
   if (legacyFRDCollection_)
-    daqProvenanceHelpers_.emplace_back(std::make_shared<const edm::DaqProvenanceHelper>(
-        edm::TypeID(typeid(FEDRawDataCollection)), "FEDRawDataCollection", "FEDRawDataCollection", "DAQSource"));
+    daqProvenanceHelpers_.emplace_back(
+        std::make_shared<const edm::DaqProvenanceHelper>(edm::TypeID(typeid(FEDRawDataCollection)), "DAQSource"));
   else
-    daqProvenanceHelpers_.emplace_back(std::make_shared<const edm::DaqProvenanceHelper>(
-        edm::TypeID(typeid(RawDataBuffer)), "RawDataBuffer", "RawDataBuffer", "DAQSource"));
+    daqProvenanceHelpers_.emplace_back(
+        std::make_shared<const edm::DaqProvenanceHelper>(edm::TypeID(typeid(RawDataBuffer)), "DAQSource"));
 
   return daqProvenanceHelpers_;
 }
@@ -252,7 +253,7 @@ void DataModeDTH::makeDataBlockView(unsigned char* addr, RawInputFile* rawFile) 
           checksumValid_ = false;
           if (!checksumError_.empty())
             checksumError_ += "\n";
-          checksumError_ += fmt::format(
+          checksumError_ += std::format(
               "Found a wrong crc32c checksum in orbit header v{} run: {} orbit: {} sourceId: {} wcount: {} events: {} "
               "flags: {}. Expected {:x} but calculated {:x}",
               orbitHeader->version(),
@@ -476,8 +477,7 @@ int DataModeDTH::eventCounterCallback(
   if ((rawFd = ::open(name.c_str(), O_RDONLY)) < 0) {
     assert(rawFd == -1);
     found = false;
-    edm::LogError("EvFDaqDirector") << "parseFRDFileHeader - failed to open input file -: " << name << " : "
-                                    << strerror(errno);
+    edm::LogError("EvFDaqDirector") << "rawCounter - failed to open input file -: " << name << " : " << strerror(errno);
     return -1;
   }
   found = true;
@@ -513,7 +513,7 @@ int DataModeDTH::eventCounterCallback(
       edm::LogError("EvFDaqDirector") << "Invalid DTH header encountered";
       return fileClose();
     }
-    if (!oh->verifyMarker() || oh->version() != 1) {
+    if (!oh->verifyMarker() || (oh->version() != 1 && oh->version() != 2)) {
       edm::LogError("EvFDaqDirector") << "Unexpected DTH header version " << oh->version();
       return fileClose();
     }
