@@ -20,7 +20,6 @@ RootSecondaryFileSequence: This is an InputSource
 namespace edm {
 
   class BranchID;
-  class FileCatalogItem;
   class InputFileCatalog;
   class RNTupleTempSource;
   class RootFile;

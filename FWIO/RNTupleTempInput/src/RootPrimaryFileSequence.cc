@@ -15,7 +15,6 @@
 #include "FWCore/ParameterSet/interface/ParameterSet.h"
 #include "FWCore/ParameterSet/interface/ParameterSetDescription.h"
 #include "FWCore/ServiceRegistry/interface/Service.h"
-#include "FWStorage/Catalog/interface/InputFileCatalog.h"
 #include "FWStorage/Catalog/interface/SiteLocalConfig.h"
 #include "FWStorage/StorageFactory/interface/StorageFactory.h"
 
@@ -58,7 +57,7 @@ namespace edm::rntuple_temp {
 
     // Prestage the files
     for (setAtFirstFile(); !noMoreFiles(); setAtNextFile()) {
-      storage::StorageFactory::get()->stagein(fileNames()[0]);
+      storage::StorageFactory::get()->stagein(physicalFileNames()[0]);
     }
     // Open the first file.
     for (setAtFirstFile(); !noMoreFiles(); setAtNextFile()) {
@@ -127,7 +126,7 @@ namespace edm::rntuple_temp {
   void RootPrimaryFileSequence::closeFile_() {
     // close the currently open file, if any, and delete the RootFile object.
     if (rootFile()) {
-      auto sentry = std::make_unique<InputSource::FileCloseSentry>(input_, lfn());
+      auto sentry = std::make_unique<InputSource::FileCloseSentry>(input_, cfn());
       rootFile()->close();
       if (duplicateChecker_)
         duplicateChecker_->inputFileClosed();
@@ -147,7 +146,7 @@ namespace edm::rntuple_temp {
   RootPrimaryFileSequence::RootFileSharedPtr RootPrimaryFileSequence::makeRootFile(std::shared_ptr<InputFile> filePtr) {
     size_t currentIndexIntoFile = sequenceNumberOfFile();
     return std::make_shared<RootFile>(
-        RootFile::FileOptions{.fileName = fileNames()[0],
+        RootFile::FileOptions{.fileName = physicalFileNames()[0],
                               .logicalFileName = logicalFileName(),
                               .filePtr = filePtr,
                               .bypassVersionCheck = input_.bypassVersionCheck(),
@@ -196,8 +195,8 @@ namespace edm::rntuple_temp {
     } while (true);
 
     // make sure the new product registry is compatible with the main one
-    std::string mergeInfo =
-        input_.productRegistryUpdate().merge(*rootFile()->productRegistry(), fileNames()[0], branchesMustMatch_);
+    std::string mergeInfo = input_.productRegistryUpdate().merge(
+        *rootFile()->productRegistry(), physicalFileNames()[0], branchesMustMatch_);
     if (!mergeInfo.empty()) {
       throw Exception(errors::MismatchedInputFiles, "RootPrimaryFileSequence::nextFile()") << mergeInfo;
     }
@@ -214,8 +213,8 @@ namespace edm::rntuple_temp {
 
     if (rootFile()) {
       // make sure the new product registry is compatible to the main one
-      std::string mergeInfo =
-          input_.productRegistryUpdate().merge(*rootFile()->productRegistry(), fileNames()[0], branchesMustMatch_);
+      std::string mergeInfo = input_.productRegistryUpdate().merge(
+          *rootFile()->productRegistry(), physicalFileNames()[0], branchesMustMatch_);
       if (!mergeInfo.empty()) {
         throw Exception(errors::MismatchedInputFiles, "RootPrimaryFileSequence::previousEvent()") << mergeInfo;
       }

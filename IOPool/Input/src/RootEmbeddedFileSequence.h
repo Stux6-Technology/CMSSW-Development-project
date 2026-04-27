@@ -23,7 +23,6 @@ namespace CLHEP {
 namespace edm {
 
   class BranchID;
-  class FileCatalogItem;
   class InputFileCatalog;
   class ParameterSetDescription;
   class EmbeddedRootSource;

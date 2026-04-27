@@ -25,7 +25,6 @@ namespace edm {
 
   class BranchID;
   class DuplicateChecker;
-  class FileCatalogItem;
   class InputFileCatalog;
   class ParameterSetDescription;
   class PoolSource;
