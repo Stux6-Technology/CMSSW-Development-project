@@ -24,7 +24,6 @@ RootPrimaryFileSequence: This is an InputSource
 namespace edm {
 
   class BranchID;
-  class FileCatalogItem;
   class InputFileCatalog;
   class ParameterSetDescription;
   namespace rntuple_temp {
