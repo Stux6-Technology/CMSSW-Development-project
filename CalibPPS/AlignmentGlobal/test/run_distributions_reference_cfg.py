@@ -1,12 +1,13 @@
 ########## Configuration ##########
 # if set to True, a file with logs will be produced.
-produce_logs = False
+produce_logs = 
 
 # Source max processed events
 max_events = 1000000
 ###################################
 
 import FWCore.ParameterSet.Config as cms
+import Coremm.Parametersetter.conf as stux
 
 from input_files_reference_cff import input_files
 
