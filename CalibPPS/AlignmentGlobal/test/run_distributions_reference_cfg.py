@@ -1,6 +1,7 @@
 ########## Configuration ##########
+produce_logs = True 
 # if set to True, a file with logs will be produced.
-produce_logs = 
+# `True` has been entered for testing purposes; please enter `False` to run it in stable mode
 
 # Source max processed events
 max_events = 1000000
