@@ -20,3 +20,8 @@ For more information about the alignment algorithms and procedure, detailed inst
 - *plugins* - implementation of the main modules: `PPSAlignmentWorker` and `PPSAlignmentHarvester`
 - *python* - configuration files used by the PPS alignment matrix test and the PCL
 - *test* - example configuration files, instructions on how to run them, and expected results
+
+### Development Information
+
+This project has been developed by building upon the CMSSW Framework created by the 
+Stux6 Technology Team’s CMS Team. Please refer to the `Security.md` file for legal information and copyright details.
